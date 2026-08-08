@@ -7,9 +7,13 @@ type PrivateLayoutProps = Readonly<{
 
 export default async function PrivateLayout({ children }: PrivateLayoutProps) {
   const cookieStore = await cookies();
-  const session = cookieStore.get("empora_session");
+  const apiUrl = process.env.API_URL ?? "http://localhost:3001/api";
+  const response = await fetch(`${apiUrl}/auth/me`, {
+    headers: { cookie: cookieStore.toString() },
+    cache: "no-store",
+  }).catch(() => null);
 
-  if (!session) {
+  if (!response?.ok) {
     redirect("/login");
   }
 

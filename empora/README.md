@@ -1,36 +1,57 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Empora
 
-## Getting Started
+Empora consists of a Next.js frontend in `empora/` and a NestJS API in
+`backend/`. PostgreSQL stores users, refresh sessions, surveys and responses.
 
-First, run the development server:
+## Local setup
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+Requirements: Node.js 20 or newer, npm and Docker.
+
+From the repository root:
+
+```powershell
+docker compose up -d
+Copy-Item backend\.env.example backend\.env
+Copy-Item empora\.env.example empora\.env.local
+cd backend
+npm install
+npm run db:migrate
+npm run db:seed
+npm run start:dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+In another terminal:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```powershell
+cd empora
+npm install
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The frontend is available at `http://localhost:3000`, the API at
+`http://localhost:3001/api`, and Swagger at `http://localhost:3001/docs`.
 
-## Learn More
+The seed administrator defaults to `admin@empora.local` / `ChangeMe123!`.
+Override `ADMIN_EMAIL` and `ADMIN_PASSWORD` outside a local environment.
 
-To learn more about Next.js, take a look at the following resources:
+## Database commands
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+From `backend/`, run `npm run db:migrate` to apply migrations,
+`npm run db:rollback` to revert the latest migration, and `npm run db:seed` to
+create the administrator and demonstration survey.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Verification
 
-## Deploy on Vercel
+```powershell
+cd backend
+npm run lint
+npm test
+npm run test:e2e
+npm run build
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+cd ..\empora
+npm run lint
+npm run build
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The end-to-end test expects a migrated and seeded local PostgreSQL database.

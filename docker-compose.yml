@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: empora
+      POSTGRES_USER: empora
+      POSTGRES_PASSWORD: empora
+    ports:
+      - "5432:5432"
+    volumes:
+      - empora_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U empora -d empora"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  empora_postgres:

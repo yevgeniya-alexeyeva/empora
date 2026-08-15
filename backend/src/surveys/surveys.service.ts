@@ -5,7 +5,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
-import { Transaction } from 'sequelize';
+import {
+  ForeignKeyConstraintError,
+  Op,
+  Transaction,
+  UniqueConstraintError,
+} from 'sequelize';
 import {
   Answer,
   Question,
@@ -42,7 +47,7 @@ export class SurveysService {
   listPublished() {
     return this.surveys.findAll({
       where: { isPublished: true },
-      attributes: ['id', 'title', 'description', 'createdAt'],
+      attributes: ['id', 'title', 'description', 'isAnonymous', 'createdAt'],
       order: [['createdAt', 'DESC']],
     });
   }
@@ -67,7 +72,13 @@ export class SurveysService {
     });
   }
 
-  async getAdmin(id: string) {
+  async findSurveyOrThrow(id: string) {
+    const survey = await this.surveys.findByPk(id);
+    if (!survey) throw new NotFoundException('Survey not found');
+    return survey;
+  }
+
+  async getSurveyDetails(id: string) {
     const survey = await this.surveys.findByPk(id, { include: surveyInclude });
     if (!survey) throw new NotFoundException('Survey not found');
     return survey;
@@ -75,25 +86,36 @@ export class SurveysService {
 
   async create(dto: CreateSurveyDto) {
     this.validateQuestionOptions(dto.questions);
-    return this.surveys.sequelize!.transaction(async (transaction) => {
-      const survey = await this.surveys.create(
-        { title: dto.title, description: dto.description ?? '' },
-        { transaction },
+    try {
+      const surveyId = await this.surveys.sequelize!.transaction(
+        async (transaction) => {
+          const survey = await this.surveys.create(
+            {
+              title: dto.title,
+              description: dto.description ?? '',
+              isAnonymous: dto.isAnonymous ?? false,
+            },
+            { transaction },
+          );
+          await this.createQuestions(survey.id, dto.questions, transaction);
+          return survey.id;
+        },
       );
-      await this.createQuestions(survey.id, dto.questions, transaction);
-      return this.getAdmin(survey.id);
-    });
+      return this.getSurveyDetails(surveyId);
+    } catch (error) {
+      this.rethrowWriteConstraint(error);
+    }
   }
 
   async update(id: string, dto: UpdateSurveyDto) {
-    const survey = await this.getAdmin(id);
+    const survey = await this.findSurveyOrThrow(id);
     await survey.update(dto);
     return survey;
   }
 
   async replaceQuestions(id: string, questions: CreateQuestionDto[]) {
     this.validateQuestionOptions(questions);
-    const survey = await this.getAdmin(id);
+    const survey = await this.findSurveyOrThrow(id);
     if (survey.isPublished) {
       throw new ConflictException(
         'Unpublish the survey before editing questions',
@@ -104,22 +126,51 @@ export class SurveysService {
         'Questions cannot be changed after responses are collected',
       );
     }
-    await this.surveys.sequelize!.transaction(async (transaction) => {
-      await this.questions.destroy({ where: { surveyId: id }, transaction });
-      await this.createQuestions(id, questions, transaction);
-    });
-    return this.getAdmin(id);
+    try {
+      await this.surveys.sequelize!.transaction(async (transaction) => {
+        await this.questions.destroy({ where: { surveyId: id }, transaction });
+        await this.createQuestions(id, questions, transaction);
+      });
+      return this.getSurveyDetails(id);
+    } catch (error) {
+      this.rethrowWriteConstraint(error);
+    }
   }
 
   async publish(id: string, isPublished: boolean) {
-    const survey = await this.getAdmin(id);
-    survey.isPublished = isPublished;
-    await survey.save();
-    return survey;
+    try {
+      return await this.surveys.sequelize!.transaction(async (transaction) => {
+        const survey = await this.surveys.findByPk(id, {
+          transaction,
+          lock: transaction.LOCK.UPDATE,
+        });
+        if (!survey) throw new NotFoundException('Survey not found');
+
+        if (isPublished) {
+          const publishedSurvey = await this.surveys.findOne({
+            where: { id: { [Op.ne]: id }, isPublished: true },
+            transaction,
+          });
+          if (publishedSurvey) {
+            throw new ConflictException('Another survey is already published');
+          }
+        }
+
+        survey.isPublished = isPublished;
+        await survey.save({ transaction });
+        return survey;
+      });
+    } catch (error) {
+      if (error instanceof ConflictException) throw error;
+      if (error instanceof UniqueConstraintError) {
+        throw new ConflictException('Another survey is already published');
+      }
+      throw error;
+    }
   }
 
   async remove(id: string) {
-    const survey = await this.getAdmin(id);
+    const survey = await this.findSurveyOrThrow(id);
     if (await this.responses.count({ where: { surveyId: id } })) {
       throw new ConflictException('Survey with responses cannot be deleted');
     }
@@ -162,6 +213,7 @@ export class SurveysService {
         await Answer.bulkCreate(
           dto.answers.map((answer) => ({
             responseId: response.id,
+            surveyId,
             questionId: answer.questionId,
             optionId: answer.optionId,
           })),
@@ -171,23 +223,31 @@ export class SurveysService {
       });
     } catch (error) {
       if (error instanceof ConflictException) throw error;
-      if (
-        (error as { name?: string }).name === 'SequelizeUniqueConstraintError'
-      ) {
+      if (error instanceof UniqueConstraintError) {
         throw new ConflictException('Survey has already been submitted');
+      }
+      if (error instanceof ForeignKeyConstraintError) {
+        throw new BadRequestException(
+          'An answer does not belong to this survey',
+        );
       }
       throw error;
     }
   }
 
   async results(id: string) {
-    await this.getAdmin(id);
+    const survey = await this.findSurveyOrThrow(id);
+    const isAnonymous = Boolean(survey.get('isAnonymous'));
+    const include = [
+      { model: Answer, include: [Question, QuestionOption] },
+      ...(!isAnonymous
+        ? [{ model: User, attributes: ['id', 'email', 'name'] }]
+        : []),
+    ];
     return this.responses.findAll({
       where: { surveyId: id },
-      include: [
-        { model: Answer, include: [Question, QuestionOption] },
-        { model: User, attributes: ['id', 'email', 'name'] },
-      ],
+      attributes: isAnonymous ? { exclude: ['userId'] } : undefined,
+      include,
       order: [['createdAt', 'DESC']],
     });
   }
@@ -218,5 +278,17 @@ export class SurveysService {
         { transaction },
       );
     }
+  }
+
+  private rethrowWriteConstraint(error: unknown): never {
+    if (error instanceof UniqueConstraintError) {
+      throw new BadRequestException(
+        'Question positions and option values must be unique',
+      );
+    }
+    if (error instanceof ForeignKeyConstraintError) {
+      throw new BadRequestException('Survey data violates integrity rules');
+    }
+    throw error;
   }
 }

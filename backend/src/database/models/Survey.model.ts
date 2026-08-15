@@ -10,6 +10,7 @@ import {
   Table,
 } from 'sequelize-typescript';
 import { Question } from './Question.model';
+import { SurveyResponse } from './SurveyResponse.model';
 
 @Table({ tableName: 'surveys', underscored: true })
 export class Survey extends Model {
@@ -33,6 +34,14 @@ export class Survey extends Model {
   @Column(DataType.BOOLEAN)
   declare isPublished: boolean;
 
+  @AllowNull(false)
+  @Default(false)
+  @Column(DataType.BOOLEAN)
+  declare isAnonymous: boolean;
+
   @HasMany(() => Question)
   declare questions: Question[];
+
+  @HasMany(() => SurveyResponse)
+  declare responses: SurveyResponse[];
 }

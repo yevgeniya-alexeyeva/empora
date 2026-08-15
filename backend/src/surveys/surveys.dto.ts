@@ -53,6 +53,11 @@ export class CreateSurveyDto {
   @MaxLength(2000)
   description?: string;
 
+  @ApiPropertyOptional({ default: false })
+  @IsOptional()
+  @IsBoolean()
+  isAnonymous?: boolean;
+
   @ApiProperty({ type: [CreateQuestionDto] })
   @IsArray()
   @ArrayMinSize(1)
@@ -82,6 +87,11 @@ export class UpdateSurveyDto {
   @IsString()
   @MaxLength(2000)
   description?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  isAnonymous?: boolean;
 }
 
 export class PublishSurveyDto {

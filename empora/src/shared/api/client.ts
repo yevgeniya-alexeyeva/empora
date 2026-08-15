@@ -16,6 +16,7 @@ export type Survey = {
   id: string;
   title: string;
   description: string;
+  isAnonymous: boolean;
   questions: SurveyQuestion[];
 };
 

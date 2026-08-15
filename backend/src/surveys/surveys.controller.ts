@@ -67,7 +67,7 @@ export class AdminSurveysController {
 
   @Get(':id')
   get(@Param('id', ParseUUIDPipe) id: string) {
-    return this.surveys.getAdmin(id);
+    return this.surveys.getSurveyDetails(id);
   }
 
   @Post()

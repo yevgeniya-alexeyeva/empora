@@ -1,9 +1,10 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
   IsInt,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
@@ -14,6 +15,34 @@ import {
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+const trim = ({ value }: { value: unknown }) =>
+  typeof value === 'string' ? value.trim() : value;
+
+const trimOptional = ({ value }: { value: unknown }) => {
+  const trimmed = trim({ value });
+  return trimmed === '' ? undefined : trimmed;
+};
+
+export class PaginationQueryDto {
+  @ApiPropertyOptional({ default: 1, minimum: 1, type: Number })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page = 1;
+
+  @ApiPropertyOptional({
+    default: 20,
+    minimum: 1,
+    maximum: 100,
+    type: Number,
+  })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit = 20;
+}
+
 export class CreateOptionDto {
   @ApiProperty({ minimum: 1, maximum: 5 })
   @IsInt()
@@ -22,14 +51,18 @@ export class CreateOptionDto {
   value!: number;
 
   @ApiProperty()
+  @Transform(trim)
   @IsString()
+  @IsNotEmpty()
   @MaxLength(120)
   label!: string;
 }
 
 export class CreateQuestionDto {
   @ApiProperty()
+  @Transform(trim)
   @IsString()
+  @IsNotEmpty()
   @MaxLength(500)
   title!: string;
 
@@ -43,11 +76,14 @@ export class CreateQuestionDto {
 
 export class CreateSurveyDto {
   @ApiProperty()
+  @Transform(trim)
   @IsString()
+  @IsNotEmpty()
   @MaxLength(200)
   title!: string;
 
   @ApiPropertyOptional()
+  @Transform(trimOptional)
   @IsOptional()
   @IsString()
   @MaxLength(2000)
@@ -77,12 +113,15 @@ export class ReplaceSurveyQuestionsDto {
 
 export class UpdateSurveyDto {
   @ApiPropertyOptional()
+  @Transform(trim)
   @IsOptional()
   @IsString()
+  @IsNotEmpty()
   @MaxLength(200)
   title?: string;
 
   @ApiPropertyOptional()
+  @Transform(trimOptional)
   @IsOptional()
   @IsString()
   @MaxLength(2000)
@@ -119,6 +158,7 @@ export class SubmitSurveyDto {
   answers!: SubmitAnswerDto[];
 
   @ApiPropertyOptional({ nullable: true })
+  @Transform(trimOptional)
   @IsOptional()
   @IsString()
   @MaxLength(2000)

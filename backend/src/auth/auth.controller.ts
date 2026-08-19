@@ -16,12 +16,20 @@ import {
   ApiOkResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto, RegisterDto } from './auth.dto';
 import { JwtAuthGuard } from './auth.guards';
 import { CurrentUser } from './auth.types';
 import type { AuthUser } from './auth.types';
+import { parseTtlSeconds } from './ttl';
+
+export const AUTH_RATE_LIMITS = {
+  register: { limit: 3, ttl: 60 * 60 * 1000 },
+  login: { limit: 5, ttl: 60 * 1000 },
+  refresh: { limit: 30, ttl: 60 * 1000 },
+} as const;
 
 @ApiTags('auth')
 @Controller('auth')
@@ -32,6 +40,7 @@ export class AuthController {
   ) {}
 
   @Post('register')
+  @Throttle({ default: AUTH_RATE_LIMITS.register })
   @ApiCreatedResponse({ description: 'User created and cookies set' })
   async register(
     @Body() dto: RegisterDto,
@@ -43,6 +52,7 @@ export class AuthController {
   }
 
   @Post('login')
+  @Throttle({ default: AUTH_RATE_LIMITS.login })
   @HttpCode(200)
   @ApiOkResponse({ description: 'Authenticated and cookies set' })
   async login(
@@ -55,6 +65,7 @@ export class AuthController {
   }
 
   @Post('refresh')
+  @Throttle({ default: AUTH_RATE_LIMITS.refresh })
   @HttpCode(200)
   async refresh(
     @Req() request: Request,
@@ -99,7 +110,8 @@ export class AuthController {
       secure,
       sameSite: 'lax',
       path: '/',
-      maxAge: 15 * 60 * 1000,
+      maxAge:
+        parseTtlSeconds(this.config.get<string>('accessTtl', '15m')) * 1000,
     });
     response.cookie('empora_refresh', tokens.refreshToken, {
       httpOnly: true,

@@ -20,8 +20,9 @@ export type Survey = {
   questions: SurveyQuestion[];
 };
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api";
+
+let refreshPromise: Promise<boolean> | null = null;
 
 export class ApiError extends Error {
   constructor(
@@ -30,6 +31,49 @@ export class ApiError extends Error {
   ) {
     super(message);
   }
+}
+
+function messageFrom(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value;
+  if (Array.isArray(value)) {
+    const messages = value
+      .map(messageFrom)
+      .filter((message): message is string => Boolean(message));
+    return messages.length ? messages.join("; ") : undefined;
+  }
+  if (value && typeof value === "object" && "message" in value) {
+    return messageFrom((value as { message?: unknown }).message);
+  }
+  return undefined;
+}
+
+export function parseApiErrorMessage(body: unknown): string {
+  if (!body || typeof body !== "object") {
+    return messageFrom(body) ?? "Request failed";
+  }
+
+  const errorBody = body as { error?: unknown; message?: unknown };
+  return (
+    messageFrom(errorBody.error) ??
+    messageFrom(errorBody.message) ??
+    "Request failed"
+  );
+}
+
+function refreshAccessToken(): Promise<boolean> {
+  if (!refreshPromise) {
+    refreshPromise = fetch(`${API_URL}/auth/refresh`, {
+      method: "POST",
+      credentials: "include",
+    })
+      .then((response) => response.ok)
+      .catch(() => false)
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+
+  return refreshPromise;
 }
 
 async function request<T>(
@@ -46,28 +90,15 @@ async function request<T>(
     },
   });
 
-  if (
-    response.status === 401 &&
-    retry &&
-    !path.startsWith("/auth/login") &&
-    !path.startsWith("/auth/refresh")
-  ) {
-    const refreshed = await fetch(`${API_URL}/auth/refresh`, {
-      method: "POST",
-      credentials: "include",
-    });
-    if (refreshed.ok) return request<T>(path, init, false);
+  if (response.status === 401 && retry && !path.startsWith("/auth/")) {
+    if (await refreshAccessToken()) {
+      return request<T>(path, init, false);
+    }
   }
 
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as
-      | { error?: { message?: string } | string; message?: string }
-      | null;
-    const message =
-      typeof body?.error === "object"
-        ? (body.error.message ?? "Request failed")
-        : body?.message ?? String(body?.error ?? "Request failed");
-    throw new ApiError(response.status, message);
+    const body: unknown = await response.json().catch(() => null);
+    throw new ApiError(response.status, parseApiErrorMessage(body));
   }
 
   if (response.status === 204) return undefined as T;
@@ -81,7 +112,7 @@ export const api = {
       body: JSON.stringify({ email, password }),
     }),
   logout: () => request<void>("/auth/logout", { method: "POST" }),
-  me: () => request<User>("/auth/me"),
+  me: () => request<User>("/users/me"),
   updateProfile: (name: string) =>
     request<User>("/users/me", {
       method: "PATCH",

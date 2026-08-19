@@ -31,11 +31,44 @@ const questions = [
   },
 ];
 
+function getAdminCredentials() {
+  const environment = process.env.NODE_ENV;
+  if (!['development', 'test', 'production'].includes(environment ?? '')) {
+    throw new Error('NODE_ENV must be one of: development, test, production');
+  }
+
+  const allowsDefaults =
+    environment === 'development' || environment === 'test';
+  const email = (
+    process.env.ADMIN_EMAIL ?? (allowsDefaults ? 'admin@empora.local' : '')
+  ).toLowerCase();
+  const password =
+    process.env.ADMIN_PASSWORD ?? (allowsDefaults ? 'ChangeMe123!' : '');
+
+  if (!email) throw new Error('ADMIN_EMAIL is required in production');
+  if (!password) throw new Error('ADMIN_PASSWORD is required in production');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error('ADMIN_EMAIL must be a valid email address');
+  }
+  if (
+    password.length < 12 ||
+    !/[a-z]/.test(password) ||
+    !/[A-Z]/.test(password) ||
+    !/\d/.test(password) ||
+    !/[^A-Za-z0-9]/.test(password)
+  ) {
+    throw new Error(
+      'ADMIN_PASSWORD must be at least 12 characters and include upper-case, lower-case, numeric, and special characters',
+    );
+  }
+
+  return { email, password };
+}
+
 async function seed() {
+  const { email, password } = getAdminCredentials();
   const sequelize = createSequelize();
   await sequelize.authenticate();
-  const email = (process.env.ADMIN_EMAIL ?? 'admin@empora.local').toLowerCase();
-  const password = process.env.ADMIN_PASSWORD ?? 'ChangeMe123!';
 
   await User.findOrCreate({
     where: { email },

@@ -8,10 +8,11 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/sequelize';
 import { compare, hash } from 'bcryptjs';
 import { createHash } from 'crypto';
-import { UniqueConstraintError } from 'sequelize';
+import { Op, Transaction, UniqueConstraintError } from 'sequelize';
 import { RefreshSession, User } from '../database/models';
 import { AuthUser } from './auth.types';
 import { LoginDto, RegisterDto } from './auth.dto';
+import { parseTtlSeconds } from './ttl';
 
 type RefreshPayload = { sub: string; sid: string; type: 'refresh' };
 type Tokens = {
@@ -19,13 +20,6 @@ type Tokens = {
   refreshToken: string;
   refreshExpiresAt: Date;
 };
-
-function ttlSeconds(value: string): number {
-  const match = /^(\d+)([smhd])$/.exec(value);
-  if (!match) throw new Error(`Unsupported JWT TTL: ${value}`);
-  const multipliers = { s: 1, m: 60, h: 3600, d: 86400 };
-  return Number(match[1]) * multipliers[match[2] as keyof typeof multipliers];
-}
 
 const tokenHash = (token: string) =>
   createHash('sha256').update(token).digest('hex');
@@ -48,14 +42,24 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
+    const passwordHash = await hash(dto.password, 12);
+    await this.cleanupExpiredSessions();
     try {
-      const user = await this.users.create({
-        email: dto.email.toLowerCase(),
-        passwordHash: await hash(dto.password, 12),
-        name: dto.name?.trim() ?? '',
+      return await this.users.sequelize!.transaction(async (transaction) => {
+        const user = await this.users.create(
+          {
+            email: dto.email.toLowerCase(),
+            passwordHash,
+            name: dto.name?.trim() ?? '',
+          },
+          { transaction },
+        );
+
+        return {
+          user: publicUser(user),
+          ...(await this.issueTokens(user, transaction)),
+        };
       });
-      
-      return { user: publicUser(user), ...(await this.issueTokens(user)) };
     } catch (error) {
       if (error instanceof UniqueConstraintError) {
         throw new ConflictException('Email is already registered');
@@ -65,6 +69,7 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
+    await this.cleanupExpiredSessions();
     const user = await this.users.findOne({
       where: { email: dto.email.toLowerCase() },
     });
@@ -84,31 +89,39 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
     if (payload.type !== 'refresh') throw new UnauthorizedException();
+    await this.cleanupExpiredSessions();
 
-    const session = await this.sessions.findByPk(payload.sid, {
-      include: [User],
+    return this.sessions.sequelize!.transaction(async (transaction) => {
+      const session = await this.sessions.findByPk(payload.sid, {
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+
+      if (
+        !session ||
+        session.userId !== payload.sub ||
+        session.expiresAt <= new Date() ||
+        session.tokenHash !== tokenHash(refreshToken)
+      ) {
+        throw new UnauthorizedException('Refresh session expired');
+      }
+
+      const user = await this.users.findByPk(session.userId, { transaction });
+      if (!user) throw new UnauthorizedException('Refresh session expired');
+
+      await session.destroy({ transaction });
+
+      return {
+        user: publicUser(user),
+        ...(await this.issueTokens(user, transaction)),
+      };
     });
-
-    if (
-      !session ||
-      session.userId !== payload.sub ||
-      session.expiresAt <= new Date() ||
-      session.tokenHash !== tokenHash(refreshToken)
-    ) {
-      throw new UnauthorizedException('Refresh session expired');
-    }
-
-    await session.destroy();
-
-    return {
-      user: publicUser(session.user),
-      ...(await this.issueTokens(session.user)),
-    };
   }
 
   async logout(refreshToken?: string) {
-    if (!refreshToken) return;
     try {
+      await this.cleanupExpiredSessions();
+      if (!refreshToken) return;
       const payload = await this.jwt.verifyAsync<RefreshPayload>(refreshToken, {
         secret: this.config.getOrThrow<string>('refreshSecret'),
       });
@@ -121,19 +134,39 @@ export class AuthService {
     }
   }
 
-  private async issueTokens(user: User): Promise<Tokens> {
-    const refreshTtl = ttlSeconds(this.config.get<string>('refreshTtl', '7d'));
-    const session = await this.sessions.create({
-      userId: user.id,
-      tokenHash: 'pending',
-      expiresAt: new Date(Date.now() + refreshTtl * 1000),
-    });
+  private async cleanupExpiredSessions() {
+    try {
+      await this.sessions.destroy({
+        where: { expiresAt: { [Op.lte]: new Date() } },
+      });
+    } catch {
+      return;
+    }
+  }
+
+  private async issueTokens(
+    user: User,
+    transaction?: Transaction,
+  ): Promise<Tokens> {
+    const refreshTtl = parseTtlSeconds(
+      this.config.get<string>('refreshTtl', '7d'),
+    );
+    const session = await this.sessions.create(
+      {
+        userId: user.id,
+        tokenHash: 'pending',
+        expiresAt: new Date(Date.now() + refreshTtl * 1000),
+      },
+      { transaction },
+    );
     const [accessToken, refreshToken] = await Promise.all([
       this.jwt.signAsync(
         { sub: user.id, type: 'access' },
         {
           secret: this.config.getOrThrow<string>('accessSecret'),
-          expiresIn: ttlSeconds(this.config.get<string>('accessTtl', '15m')),
+          expiresIn: parseTtlSeconds(
+            this.config.get<string>('accessTtl', '15m'),
+          ),
         },
       ),
       this.jwt.signAsync(
@@ -145,7 +178,7 @@ export class AuthService {
       ),
     ]);
     session.tokenHash = tokenHash(refreshToken);
-    await session.save();
+    await session.save({ transaction });
     return { accessToken, refreshToken, refreshExpiresAt: session.expiresAt };
   }
 }

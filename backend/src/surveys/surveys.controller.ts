@@ -9,6 +9,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiCookieAuth, ApiTags } from '@nestjs/swagger';
@@ -18,6 +19,7 @@ import type { AuthUser } from '../auth/auth.types';
 import { UserRole } from '../database/models';
 import {
   CreateSurveyDto,
+  PaginationQueryDto,
   PublishSurveyDto,
   ReplaceSurveyQuestionsDto,
   SubmitSurveyDto,
@@ -61,8 +63,8 @@ export class AdminSurveysController {
   constructor(private readonly surveys: SurveysService) {}
 
   @Get()
-  list() {
-    return this.surveys.listAdmin();
+  list(@Query() pagination: PaginationQueryDto) {
+    return this.surveys.listAdmin(pagination);
   }
 
   @Get(':id')
@@ -97,8 +99,11 @@ export class AdminSurveysController {
   }
 
   @Get(':id/results')
-  results(@Param('id', ParseUUIDPipe) id: string) {
-    return this.surveys.results(id);
+  results(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() pagination: PaginationQueryDto,
+  ) {
+    return this.surveys.results(id, pagination);
   }
 
   @Delete(':id')

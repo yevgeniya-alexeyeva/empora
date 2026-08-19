@@ -22,6 +22,7 @@ import {
 import {
   CreateQuestionDto,
   CreateSurveyDto,
+  PaginationQueryDto,
   SubmitSurveyDto,
   UpdateSurveyDto,
 } from './surveys.dto';
@@ -65,11 +66,15 @@ export class SurveysService {
     return survey;
   }
 
-  listAdmin() {
-    return this.surveys.findAll({
+  async listAdmin({ page, limit }: PaginationQueryDto) {
+    const { rows, count } = await this.surveys.findAndCountAll({
       include: surveyInclude,
       order: [['createdAt', 'DESC']],
+      distinct: true,
+      limit,
+      offset: (page - 1) * limit,
     });
+    return this.paginated(rows, page, limit, count);
   }
 
   async findSurveyOrThrow(id: string) {
@@ -131,7 +136,7 @@ export class SurveysService {
         await this.questions.destroy({ where: { surveyId: id }, transaction });
         await this.createQuestions(id, questions, transaction);
       });
-      return this.getSurveyDetails(id);
+      return survey;
     } catch (error) {
       this.rethrowWriteConstraint(error);
     }
@@ -235,7 +240,7 @@ export class SurveysService {
     }
   }
 
-  async results(id: string) {
+  async results(id: string, { page, limit }: PaginationQueryDto) {
     const survey = await this.findSurveyOrThrow(id);
     const isAnonymous = Boolean(survey.get('isAnonymous'));
     const include = [
@@ -244,12 +249,28 @@ export class SurveysService {
         ? [{ model: User, attributes: ['id', 'email', 'name'] }]
         : []),
     ];
-    return this.responses.findAll({
+    const { rows, count } = await this.responses.findAndCountAll({
       where: { surveyId: id },
       attributes: isAnonymous ? { exclude: ['userId'] } : undefined,
       include,
       order: [['createdAt', 'DESC']],
+      distinct: true,
+      limit,
+      offset: (page - 1) * limit,
     });
+    return this.paginated(rows, page, limit, count);
+  }
+
+  private paginated<T>(items: T[], page: number, limit: number, total: number) {
+    return {
+      items,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   private validateQuestionOptions(questions: CreateQuestionDto[]) {

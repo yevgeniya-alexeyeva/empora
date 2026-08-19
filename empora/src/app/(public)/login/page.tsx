@@ -31,7 +31,7 @@ export default function LoginPage() {
   return (
     <section className="space-y-4 py-10">
       <h1 className="text-2xl font-semibold tracking-tight">Login</h1>
-      <p className="text-sm tex-main-color/60">
+      <p className="text-foreground/60 text-sm">
         Sign in to access your profile and employee surveys.
       </p>
       <form className="max-w-sm space-y-3" onSubmit={login}>

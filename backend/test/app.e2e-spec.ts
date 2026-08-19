@@ -1,12 +1,20 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
-import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
+import { configureApp } from '../src/configure-app';
+import { User, UserRole } from '../src/database/models';
 
 describe('Empora API (e2e)', () => {
   let app: INestApplication<App>;
+  let agent: ReturnType<typeof request.agent>;
+  let email: string;
+  let activeSurvey: {
+    id: string;
+    questions: Array<{ id: string; options: Array<{ id: string }> }>;
+  };
 
   beforeAll(async () => {
     const moduleFixture = await Test.createTestingModule({
@@ -14,51 +22,149 @@ describe('Empora API (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.use(cookieParser());
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        forbidNonWhitelisted: true,
-        transform: true,
-      }),
-    );
+    configureApp(app, app.get(ConfigService));
     await app.init();
+    agent = request.agent(app.getHttpServer());
+    email = `e2e-${Date.now()}-${Math.random().toString(16).slice(2)}@example.com`;
   });
 
-  it('registers, refreshes, reads profile, submits survey and blocks admin API', async () => {
-    const agent = request.agent(app.getHttpServer());
-    const email = `e2e-${Date.now()}@example.com`;
+  describe('origin protection', () => {
+    it('rejects unsafe requests from an untrusted origin', async () => {
+      await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .set('Origin', 'https://attacker.example')
+        .send({ email: 'nobody@example.com', password: 'Password123!' })
+        .expect(403);
+    });
+  });
 
-    await agent
-      .post('/api/auth/register')
-      .send({ email, password: 'Password123!', name: 'E2E User' })
-      .expect(201);
-    await agent.post('/api/auth/refresh').expect(200);
-    const profileResponse = await agent.get('/api/users/me').expect(200);
-    const profile = profileResponse.body as { email: string };
-    expect(profile.email).toBe(email);
+  describe('auth', () => {
+    it('registers, refreshes and reads the authenticated profile', async () => {
+      await agent
+        .post('/api/auth/register')
+        .send({ email, password: 'Password123!', name: 'E2E User' })
+        .expect(201);
+      await agent.post('/api/auth/refresh').expect(200);
+      const profileResponse = await agent.get('/api/users/me').expect(200);
 
-    const surveysResponse = await agent.get('/api/surveys').expect(200);
-    const surveys = surveysResponse.body as Array<{ id: string }>;
-    expect(surveys.length).toBeGreaterThan(0);
-    const surveyResponse = await agent
-      .get(`/api/surveys/${surveys[0].id}`)
-      .expect(200);
-    const survey = surveyResponse.body as {
-      id: string;
-      questions: Array<{ id: string; options: Array<{ id: string }> }>;
-    };
-    await agent
-      .post(`/api/surveys/${survey.id}/responses`)
-      .send({
-        answers: survey.questions.map((question) => ({
+      expect((profileResponse.body as { email: string }).email).toBe(email);
+    });
+  });
+
+  describe('validation', () => {
+    it('rejects invalid and non-whitelisted fields', async () => {
+      await agent
+        .post('/api/auth/login')
+        .send({
+          email: 'not-an-email',
+          password: 'short',
+          unexpected: true,
+        })
+        .expect(400);
+    });
+  });
+
+  describe('authorization', () => {
+    it('requires authentication and blocks a regular user from admin APIs', async () => {
+      await request(app.getHttpServer()).get('/api/surveys').expect(401);
+      await agent.get('/api/admin/surveys').expect(403);
+    });
+  });
+
+  describe('surveys', () => {
+    it('lists and returns the seeded active survey', async () => {
+      const surveysResponse = await agent.get('/api/surveys').expect(200);
+      const surveys = surveysResponse.body as Array<{ id: string }>;
+      expect(surveys).toHaveLength(1);
+
+      const surveyResponse = await agent
+        .get(`/api/surveys/${surveys[0].id}`)
+        .expect(200);
+      activeSurvey = surveyResponse.body as typeof activeSurvey;
+      expect(activeSurvey.questions.length).toBeGreaterThan(0);
+    });
+
+    it('accepts one response and rejects a repeat submission', async () => {
+      const payload = {
+        answers: activeSurvey.questions.map((question) => ({
           questionId: question.id,
           optionId: question.options[0].id,
         })),
-      })
-      .expect(201);
-    await agent.get('/api/admin/surveys').expect(403);
+      };
+
+      await agent
+        .post(`/api/surveys/${activeSurvey.id}/responses`)
+        .send(payload)
+        .expect(201);
+      await agent
+        .post(`/api/surveys/${activeSurvey.id}/responses`)
+        .send(payload)
+        .expect(409);
+    });
+  });
+
+  describe('admin survey invariants', () => {
+    beforeAll(async () => {
+      await User.update({ role: UserRole.ADMIN }, { where: { email } });
+      await agent.post('/api/auth/refresh').expect(200);
+    });
+
+    it('creates a survey with its nested questions transactionally', async () => {
+      const title = `E2E transactional ${Date.now()}-${Math.random()
+        .toString(16)
+        .slice(2)}`;
+      const createdResponse = await agent
+        .post('/api/admin/surveys')
+        .send({
+          title,
+          description: 'Persistent E2E fixture; do not reuse by title',
+          questions: [
+            {
+              title: 'Transactional question',
+              options: [
+                { value: 1, label: 'Low' },
+                { value: 5, label: 'High' },
+              ],
+            },
+          ],
+        })
+        .expect(201);
+      const created = createdResponse.body as {
+        id: string;
+        title: string;
+        questions: Array<{ options: unknown[] }>;
+      };
+
+      expect(created.title).toBe(title);
+      expect(created.questions).toHaveLength(1);
+      expect(created.questions[0].options).toHaveLength(2);
+    });
+
+    it('enforces one active survey', async () => {
+      const createdResponse = await agent
+        .post('/api/admin/surveys')
+        .send({
+          title: `E2E inactive ${Date.now()}-${Math.random()
+            .toString(16)
+            .slice(2)}`,
+          questions: [
+            {
+              title: 'Publish conflict question',
+              options: [
+                { value: 1, label: 'No' },
+                { value: 2, label: 'Yes' },
+              ],
+            },
+          ],
+        })
+        .expect(201);
+      const created = createdResponse.body as { id: string };
+
+      await agent
+        .patch(`/api/admin/surveys/${created.id}/publication`)
+        .send({ isPublished: true })
+        .expect(409);
+    });
   });
 
   afterAll(async () => {

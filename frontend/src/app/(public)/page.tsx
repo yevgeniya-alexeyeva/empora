@@ -14,6 +14,9 @@ export default function HomePage() {
         <Link className="underline" href="/survey">
           Survey
         </Link>
+        <Link className="underline" href="/components">
+          Components
+        </Link>
       </div>
     </section>
   );

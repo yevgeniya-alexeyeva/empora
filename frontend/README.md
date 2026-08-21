@@ -24,7 +24,7 @@ npm run start:dev
 In another terminal:
 
 ```powershell
-cd empora
+cd frontend
 npm install
 npm run dev
 ```
